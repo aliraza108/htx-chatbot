@@ -1,7 +1,5 @@
 fastapi
 openai-agents
-requests
-beautifulsoup4
 httpx
 python-dotenv
 nest_asyncio
@@ -10,3 +8,4 @@ mangum
 pydantic
 openai
 httpx[http2]
+dataclasses
