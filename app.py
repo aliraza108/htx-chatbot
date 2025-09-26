@@ -1,7 +1,6 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI()
 
 # Add CORS middleware (only once)
@@ -13,13 +12,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define request body model
-class ChatMessage(BaseModel):
-    message: str
-
-
 @app.post("/chat")
-async def chat_with_agent(request: ChatRequest):
+async def chat_with_agent():
     """
     This endpoint receives a message from the frontend, runs the agent,
     and returns the agent's full response.
