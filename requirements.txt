@@ -1,0 +1,12 @@
+fastapi
+openai-agents
+requests
+beautifulsoup4
+httpx
+python-dotenv
+nest_asyncio
+uvicorn
+mangum
+pydantic
+openai
+httpx[http2]
