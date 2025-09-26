@@ -1,9 +1,10 @@
-# chat_api.py
+# api.py
 
 import os
+import re
 import json
 from typing import Any, List
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,34 +12,24 @@ from fastapi.responses import JSONResponse
 
 from agents import (
     function_tool,
-    FileSearchTool,
     Runner,
     Agent,
     set_tracing_disabled,
-    set_default_openai_api,
-    set_default_openai_client,
-    AsyncOpenAI,
+    FileSearchTool,
 )
 
-# =====================
-# API Key Setup
-# =====================
+# ==========================================
+# OpenAI API Key from Vercel environment
+# ==========================================
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("Missing OPENAI_API_KEY env variable")
 
-# Configure OpenAI client
-client = AsyncOpenAI(
-    base_url="https://api.openai.com/v1",
-    api_key=OPENAI_API_KEY,
-)
-set_default_openai_api("chat_completions")
-set_default_openai_client(client=client)
 set_tracing_disabled(True)
 
-# =====================
-# Output Schemas
-# =====================
+# ==========================================
+# Dataclasses
+# ==========================================
 @dataclass
 class ProductOutput:
     Product_Title: str
@@ -48,104 +39,134 @@ class ProductOutput:
     Product_description: str
     Product_qty: str
 
-@dataclass
-class StoreInfoOutput:
-    Store_name: str
-    Store_description: str
-    Store_address: str
-    Store_domain: str
-    Store_logo: str
-    Store_products: List[str]
-
-# =====================
+# ==========================================
 # Agents
-# =====================
+# ==========================================
 Product_Agent = Agent(
     name="Product Agent",
-    instructions="You are responsible for product-related queries. Only use the FileSearchTool to fetch product information.",
+    instructions="""
+You are the Product Agent.
+
+Rules:
+- Only return a JSON array of product objects.
+- Each product must strictly follow this schema:
+[
+  {
+    "Product_Title": "string",
+    "Product_Price": 0,
+    "Product_Link": "string",
+    "Product_Image": "string",
+    "Product_description": "string",
+    "Product_qty": "string"
+  }
+]
+- No markdown, no text commentary.
+- If nothing is found, return [].
+""",
     tools=[
         FileSearchTool(
-            name="Product Search Tool",
-            path="product.json",
-            instructions="Fetch product data based on user query.",
-            output_type=List[ProductOutput],
-        )
+            max_num_results=30,
+            vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"],
+        ),
     ],
+    model="gpt-4o-mini",
+    output_type=List[ProductOutput],
 )
 
 StoreInfo_Agent = Agent(
-    name="StoreInfo Agent",
-    instructions="You handle store information queries. Use the FileSearchTool to fetch store details.",
+    name="Store Info Agent",
+    instructions="""
+You are the Store Info Agent.
+
+Answer only store-related queries using the FileSearchTool.
+Do not invent details.
+""",
     tools=[
         FileSearchTool(
-            name="Store Info Tool",
-            path="storeinfo.json",
-            instructions="Fetch store info (name, description, address, etc).",
-            output_type=List[StoreInfoOutput],
-        )
+            max_num_results=30,
+            vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"],
+        ),
     ],
+    model="gpt-4o-mini",
 )
 
 Triage_Agent = Agent(
     name="Triage Agent",
-    instructions="Decide whether the query is about products or store info. If about products, hand off to Product Agent. If about store info, hand off to StoreInfo Agent. Otherwise, reply that you can only provide product or store details.",
+    instructions="""
+Route queries:
+- If product-related → Product Agent
+- If store info-related → Store Info Agent
+""",
     handoffs=[Product_Agent, StoreInfo_Agent],
+    model="gpt-4o-mini",
 )
 
-# Runner setup
 runner = Runner(Triage_Agent)
 
-# =====================
-# FastAPI Setup
-# =====================
+# ==========================================
+# FastAPI setup
+# ==========================================
 app = FastAPI()
 
-# Allow CORS (useful for frontend integration)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # change in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =====================
-# Utility Functions
-# =====================
+# ==========================================
+# Utils
+# ==========================================
+def parse_price(s: Any):
+    if s is None:
+        return 0
+    m = re.search(r"(\d+(?:[\.,]\d+)?)", str(s))
+    if not m:
+        return 0
+    val = m.group(1).replace(",", ".")
+    try:
+        return float(val) if "." in val else int(val)
+    except:
+        return 0
+
 def normalize_item(item: Any):
-    """Convert agent output into JSON-serializable dicts."""
     if hasattr(item, "__dict__"):
         item = item.__dict__
     if not isinstance(item, dict):
         return None
-    return {k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v)) for k, v in item.items()}
+    return {
+        "title": item.get("Product_Title") or item.get("title") or "",
+        "price": parse_price(item.get("Product_Price") or item.get("price")),
+        "link": item.get("Product_Link") or item.get("link") or "",
+        "image": item.get("Product_Image") or item.get("image") or "",
+        "description": item.get("Product_description") or item.get("description") or "",
+        "qty": item.get("Product_qty") or item.get("qty") or "",
+    }
 
 def serialize_output(output: Any):
-    """Normalize runner output for JSON response."""
     if isinstance(output, list):
-        return [normalize_item(i) for i in output if normalize_item(i) is not None]
-    return normalize_item(output)
+        return [normalize_item(i) for i in output if normalize_item(i)]
+    return [normalize_item(output)] if normalize_item(output) else []
 
-# =====================
+# ==========================================
 # Routes
-# =====================
+# ==========================================
 @app.post("/chat")
 async def chat(request: Request):
-    """Main chatbot endpoint."""
     data = await request.json()
-    user_message = data.get("message", "").strip()
+    user_message = data.get("query") or data.get("message")
     if not user_message:
-        return JSONResponse({"error": "Message is required"}, status_code=400)
+        return JSONResponse({"error": "query/message is required"}, status_code=400)
 
     try:
-        # Run the triage agent
         result = await runner.run(user_message)
-        response_data = serialize_output(result)
-        return JSONResponse(content={"response": response_data})
+        products = serialize_output(result)
+        return JSONResponse({"products": products})
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/")
 async def root():
-    return {"message": "FastAPI Chatbot with Multi-Agent Routing is running 🚀"}
+    return {"message": "FastAPI multi-agent chatbot running 🚀"}
