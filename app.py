@@ -149,10 +149,7 @@ def serialize_output(output: Any):
     if isinstance(output, list):
         return [normalize_item(i) for i in output if normalize_item(i)]
     return [normalize_item(output)] if normalize_item(output) else []
-
-# ==========================================
-# Routes
-# ==========================================
+    
 @app.post("/chat")
 async def chat(request: Request):
     data = await request.json()
