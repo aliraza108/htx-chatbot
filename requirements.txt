@@ -7,5 +7,4 @@ uvicorn
 mangum
 pydantic
 openai
-httpx[http2]
-dataclasses
+
