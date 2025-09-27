@@ -134,15 +134,17 @@ app.add_middleware(
 async def root():
     return {"message": "App is running. Use /chat with GET ?message= or POST JSON."}
 
-# --- Chat endpoint ---
-@app.get("/chat")
-async def chat_get(message: str):
-    result = await Runner.run(Triage_Agent, input=message)
-    return {"reply": result.final_output}
 
 @app.post("/chat")
-async def chat_post(request: Request):
+async def chat(request: Request):
     body = await request.json()
-    message = body.get("message", "")
-    result = await Runner.run(Triage_Agent, input=message)
-    return JSONResponse({"reply": result.final_output})
+    query = body.get("query")   # ✅ match frontend
+    force = body.get("force", False)
+
+    if not query:
+        return {"error": "Missing query"}
+    
+    # Pass query into Runner
+    result = await Runner.run(Triage_Agent, input=query)
+    return {"reply": result}
+
