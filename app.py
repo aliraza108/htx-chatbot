@@ -170,7 +170,6 @@ def normalize_item(item: Any) -> dict | None:
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
 
-
 @app.post("/chat")
 async def chat(req: Request):
     """
@@ -181,48 +180,60 @@ async def chat(req: Request):
     query = (body.get("query") or body.get("message") or "").strip()
 
     try:
-        # --- Run Triage Agent with strict timeout (fast) ---
-        try:
-            result = await asyncio.wait_for(
-                Runner.run(Triage_Agent, input=query),
-                timeout=5   # keep very short
-            )
-            final_output = result.final_output
-        except asyncio.TimeoutError:
-            return JSONResponse({
-                "products": [],
-                "reply": "⚡ Request took too long. Please try again."
-            })
+        # --- Run Triage Agent first (fast) ---
+        result = await asyncio.wait_for(
+            Runner.run(Triage_Agent, input=query),
+            timeout=5  # Q&A is fast, products may handoff
+        )
+        final_output = result.final_output
 
         products: List[dict] = []
         reply_text = ""
 
-        # Case: list of structured products
+        # --- Case 1: list of products ---
         if isinstance(final_output, list):
             for it in final_output:
                 n = normalize_item(it)
                 if n:
                     products.append(n)
 
-        # Case: single product dict
+        # --- Case 2: single product dict ---
         elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
             n = normalize_item(final_output)
             if n:
                 products.append(n)
 
-        # Case: plain text reply
+        # --- Case 3: plain text ---
         elif isinstance(final_output, str):
             reply_text = final_output
+
+            # 🔥 If looks like a product markdown dump, re-run with Product_Agent
+            if "http" in reply_text or "Price" in reply_text:
+                try:
+                    result2 = await Runner.run(Product_Agent, input=query)
+                    final_output2 = result2.final_output
+                    if isinstance(final_output2, list):
+                        for it in final_output2:
+                            n = normalize_item(it)
+                            if n:
+                                products.append(n)
+                        reply_text = ""  # clear markdown junk
+                except Exception:
+                    pass
 
         return JSONResponse({
             "products": products,
             "reply": reply_text,
         })
 
+    except asyncio.TimeoutError:
+        return JSONResponse({
+            "products": [],
+            "reply": "⚡ Request took too long. Please try again."
+        })
     except Exception as e:
         return JSONResponse({
             "products": [],
             "reply": "⚠️ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
-
