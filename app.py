@@ -138,13 +138,16 @@ async def root():
 @app.post("/chat")
 async def chat(request: Request):
     body = await request.json()
-    query = body.get("query")   # ✅ match frontend
+    query = body.get("query")
     force = body.get("force", False)
 
     if not query:
         return {"error": "Missing query"}
-    
-    # Pass query into Runner
-    result = await Runner.run(Triage_Agent, input=query)
-    return {"reply": result}
+
+    try:
+        result = await Runner.run(Triage_Agent, input=query)
+        return {"reply": str(result)}
+    except Exception as e:
+        print("Runner error:", e)
+        return {"error": "Agent failed", "details": str(e)}
 
