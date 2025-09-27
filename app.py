@@ -1,6 +1,6 @@
 # chat_api.py
-import re
 import os
+import asyncio
 from dataclasses import dataclass, asdict
 from typing import Any, List
 from fastapi import FastAPI, Request
@@ -28,7 +28,6 @@ You are the Triage Agent.
 """,
     tools=[FileSearchTool(max_num_results=30,
                           vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
-    
     model="gpt-4o-mini",
 )
 
@@ -50,12 +49,26 @@ async def chat(req: Request):
     """
     body = await req.json()
     query = (body.get("query") or body.get("message") or "").strip()
-   try:
-     result = await Runner.run(Triage_Agent, input=query)
-     return result.final_output
-   except Exception as e:
-        print("Agent error:", e)   # ✅ shows in Vercel logs
+
+    try:
+        # ✅ Set timeout so UI never waits too long
+        result = await asyncio.wait_for(
+            Runner.run(Triage_Agent, input=query),
+            timeout=8  # seconds max wait
+        )
+        return result.final_output
+
+    except asyncio.TimeoutError:
         return JSONResponse({
+            "products": [],
+            "reply": "⏱ Request took too long, please try again.",
+            "error": "timeout",
+        }, status_code=504)
+
+    except Exception as e:
+        # ✅ Always return something fast, no 'thinking...' delay
+        return JSONResponse({
+            "products": [],
             "reply": "⚠ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
