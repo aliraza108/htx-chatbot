@@ -169,7 +169,6 @@ def normalize_item(item: Any) -> dict | None:
         "description": item.get("Product_description") or item.get("description") or "",
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
-
 @app.post("/chat")
 async def chat(req: Request):
     """
@@ -180,24 +179,21 @@ async def chat(req: Request):
     query = (body.get("query") or body.get("message") or "").strip()
 
     try:
-        # --- Run Triage Agent first (fast) ---
-        result = await asyncio.wait_for(
-            Runner.run(Triage_Agent, input=query),
-            timeout=5  # Q&A is fast, products may handoff
-        )
+        # --- Always run triage (no timeout) ---
+        result = await Runner.run(Triage_Agent, input=query)
         final_output = result.final_output
 
         products: List[dict] = []
         reply_text = ""
 
-        # --- Case 1: list of products ---
+        # --- Case 1: already structured list of products ---
         if isinstance(final_output, list):
             for it in final_output:
                 n = normalize_item(it)
                 if n:
                     products.append(n)
 
-        # --- Case 2: single product dict ---
+        # --- Case 2: single dict product ---
         elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
             n = normalize_item(final_output)
             if n:
@@ -207,7 +203,7 @@ async def chat(req: Request):
         elif isinstance(final_output, str):
             reply_text = final_output
 
-            # 🔥 If looks like a product markdown dump, re-run with Product_Agent
+            # If looks like markdown products, force Product_Agent
             if "http" in reply_text or "Price" in reply_text:
                 try:
                     result2 = await Runner.run(Product_Agent, input=query)
@@ -226,11 +222,6 @@ async def chat(req: Request):
             "reply": reply_text,
         })
 
-    except asyncio.TimeoutError:
-        return JSONResponse({
-            "products": [],
-            "reply": "⚡ Request took too long. Please try again."
-        })
     except Exception as e:
         return JSONResponse({
             "products": [],
