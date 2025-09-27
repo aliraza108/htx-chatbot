@@ -1,6 +1,9 @@
+# app.py
+
 import os
 import re
 import json
+import logging
 from typing import Any, List
 from dataclasses import dataclass
 
@@ -9,25 +12,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from agents import (
-    function_tool,
     Runner,
     Agent,
     set_tracing_disabled,
     FileSearchTool,
 )
 
-# ==========================================
-# OpenAI API Key from Vercel environment
-# ==========================================
+# -----------------------------
+# Setup logging
+# -----------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# -----------------------------
+# API Key
+# -----------------------------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    raise RuntimeError("Missing OPENAI_API_KEY env variable")
+    raise RuntimeError("Missing OPENAI_API_KEY in environment")
 
 set_tracing_disabled(True)
 
-# ==========================================
+# -----------------------------
 # Dataclasses
-# ==========================================
+# -----------------------------
 @dataclass
 class ProductOutput:
     Product_Title: str
@@ -37,30 +45,12 @@ class ProductOutput:
     Product_description: str
     Product_qty: str
 
-# ==========================================
+# -----------------------------
 # Agents
-# ==========================================
+# -----------------------------
 Product_Agent = Agent(
     name="Product Agent",
-    instructions="""
-You are the Product Agent.
-
-Rules:
-- Only return a JSON array of product objects.
-- Each product must strictly follow this schema:
-[
-  {
-    "Product_Title": "string",
-    "Product_Price": 0,
-    "Product_Link": "string",
-    "Product_Image": "string",
-    "Product_description": "string",
-    "Product_qty": "string"
-  }
-]
-- No markdown, no text commentary.
-- If nothing is found, return [].
-""",
+    instructions="Answer product-related queries only.",
     tools=[
         FileSearchTool(
             max_num_results=30,
@@ -73,12 +63,7 @@ Rules:
 
 StoreInfo_Agent = Agent(
     name="Store Info Agent",
-    instructions="""
-You are the Store Info Agent.
-
-Answer only store-related queries using the FileSearchTool.
-Do not invent details.
-""",
+    instructions="Answer store-related queries only.",
     tools=[
         FileSearchTool(
             max_num_results=30,
@@ -90,43 +75,38 @@ Do not invent details.
 
 Triage_Agent = Agent(
     name="Triage Agent",
-    instructions="""
-Route queries:
-- If product-related → Product Agent
-- If store info-related → Store Info Agent
-""",
+    instructions="Route queries to the correct agent.",
     handoffs=[Product_Agent, StoreInfo_Agent],
     model="gpt-4o-mini",
 )
 
 runner = Runner(Triage_Agent)
 
-# ==========================================
-# FastAPI setup
-# ==========================================
+# -----------------------------
+# FastAPI app
+# -----------------------------
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # change in prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==========================================
+# -----------------------------
 # Utils
-# ==========================================
+# -----------------------------
 def parse_price(s: Any):
     if s is None:
         return 0
     m = re.search(r"(\d+(?:[\.,]\d+)?)", str(s))
     if not m:
         return 0
-    val = m.group(1).replace(",", ".")
     try:
-        return float(val) if "." in val else int(val)
-    except:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
         return 0
 
 def normalize_item(item: Any):
@@ -135,19 +115,22 @@ def normalize_item(item: Any):
     if not isinstance(item, dict):
         return None
     return {
-        "title": item.get("Product_Title") or item.get("title") or "",
-        "price": parse_price(item.get("Product_Price") or item.get("price")),
-        "link": item.get("Product_Link") or item.get("link") or "",
-        "image": item.get("Product_Image") or item.get("image") or "",
-        "description": item.get("Product_description") or item.get("description") or "",
-        "qty": item.get("Product_qty") or item.get("qty") or "",
+        "title": item.get("Product_Title") or "",
+        "price": parse_price(item.get("Product_Price")),
+        "link": item.get("Product_Link") or "",
+        "image": item.get("Product_Image") or "",
+        "description": item.get("Product_description") or "",
+        "qty": item.get("Product_qty") or "",
     }
 
 def serialize_output(output: Any):
     if isinstance(output, list):
         return [normalize_item(i) for i in output if normalize_item(i)]
     return [normalize_item(output)] if normalize_item(output) else []
-    
+
+# -----------------------------
+# Routes
+# -----------------------------
 @app.post("/chat")
 async def chat(request: Request):
     data = await request.json()
@@ -156,12 +139,15 @@ async def chat(request: Request):
         return JSONResponse({"error": "query/message is required"}, status_code=400)
 
     try:
-        result = await runner.run(user_message)
+        logger.info(f"User message: {user_message}")
+        result = await runner.run(user_message)  # ensure async
+        logger.info(f"Raw result: {result}")
         products = serialize_output(result)
         return JSONResponse({"products": products})
     except Exception as e:
+        logger.exception("Error while processing request")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/")
 async def root():
-    return {"message": "FastAPI multi-agent chatbot running 🚀"}
+    return {"message": "FastAPI chatbot on Vercel is running 🚀"}
