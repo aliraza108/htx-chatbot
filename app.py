@@ -147,8 +147,35 @@ def normalize_item(item: Any) -> dict | None:
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
 
-
 # --- Chat Endpoint ---
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import asyncio
+from typing import List
+
+# Example simple FAQ shortcuts
+FAQS = {
+    "hi": "👋 Hi there! How can I help you today?",
+    "hello": "👋 Hello! Ask me about hemp products, pricing, or delivery.",
+    "what is your name": "🤖 I'm HTX Chatbot, your product assistant.",
+    "delivery charges": "🚚 Delivery is FREE for orders over $50. Otherwise $4.99."
+}
+
+def normalize_item(item):
+    """Normalize product object into dict for cards"""
+    try:
+        return {
+            "title": getattr(item, "Product_Title", None) or item.get("Product_Title"),
+            "price": getattr(item, "Product_Price", None) or item.get("Product_Price"),
+            "description": getattr(item, "Product_description", None) or item.get("Product_description"),
+            "image": getattr(item, "Product_Image", None) or item.get("Product_Image"),
+            "link": getattr(item, "Product_Link", None) or item.get("Product_Link"),
+            "qty": getattr(item, "Product_qty", None) or item.get("Product_qty"),
+        }
+    except Exception:
+        return None
+
+
 @app.post("/chat")
 async def chat(req: Request):
     """
@@ -156,46 +183,59 @@ async def chat(req: Request):
     Output: { "products": [...], "reply": "..." }
     """
     body = await req.json()
-    query = body.get("query") or body.get("message") or ""
+    query = (body.get("query") or body.get("message") or "").strip().lower()
 
     try:
-        # Run agent
-        result = await Runner.run(Triage_Agent, input=query)
-        final_output = result.final_output
+        # --- Quick FAQ handling (no LLM) ---
+        if query in FAQS:
+            return JSONResponse({
+                "products": [],
+                "reply": FAQS[query]
+            })
 
-        products: List[dict] = []
-        reply_text = ""
+        # --- If asking for products ---
+        if "product" in query or "hemp" in query:
+            try:
+                result = await asyncio.wait_for(
+                    Runner.run(Triage_Agent, input=query),
+                    timeout=4  # max 4s wait
+                )
+                final_output = result.final_output
+            except asyncio.TimeoutError:
+                return JSONResponse({
+                    "products": [],
+                    "reply": "⚡ Sorry, request took too long. Please try again."
+                })
 
-        # --- Case 1: Structured dict with products ---
-        if isinstance(final_output, dict) and "products" in final_output:
-            products = final_output.get("products", [])
-            reply_text = final_output.get("reply", "")
+            products: List[dict] = []
+            reply_text = ""
 
-        # --- Case 2: List of products ---
-        elif isinstance(final_output, list):
-            for it in final_output:
-                n = normalize_item(it)
+            # Case: structured list
+            if isinstance(final_output, list):
+                for it in final_output:
+                    n = normalize_item(it)
+                    if n:
+                        products.append(n)
+
+            # Case: dict / dataclass
+            elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
+                n = normalize_item(final_output)
                 if n:
                     products.append(n)
 
-        # --- Case 3: Single dict product ---
-        elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
-            n = normalize_item(final_output)
-            if n:
-                products.append(n)
-
-        # --- Case 4: Plain text ---
-        elif isinstance(final_output, str):
-            # Try to parse markdown into products
-            parsed = parse_markdown_products(final_output)
-            if parsed and len(parsed) > 0:
-                products.extend(parsed)
-            else:
+            # Case: plain text
+            elif isinstance(final_output, str):
                 reply_text = final_output
 
+            return JSONResponse({
+                "products": products,
+                "reply": reply_text
+            })
+
+        # --- Default fallback (fast text only) ---
         return JSONResponse({
-            "products": products,
-            "reply": reply_text,
+            "products": [],
+            "reply": "🤔 I didn’t understand that. Try asking about hemp products or delivery."
         })
 
     except Exception as e:
@@ -204,5 +244,4 @@ async def chat(req: Request):
             "reply": "⚠️ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
-
 
