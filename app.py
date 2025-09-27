@@ -50,15 +50,12 @@ async def chat(req: Request):
     """
     body = await req.json()
     query = (body.get("query") or body.get("message") or "").strip()
-
     try:
-        # --- Always run triage (no timeout) ---
         result = await Runner.run(Triage_Agent, input=query)
         return result.final_output
-
     except Exception as e:
+        print("Agent error:", e)   # ✅ shows in Vercel logs
         return JSONResponse({
-            "products": [],
             "reply": "⚠ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
