@@ -1,13 +1,10 @@
-# chat_api.py
 import os
 import asyncio
-from dataclasses import dataclass, asdict
-from typing import Any, List
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from agents import function_tool, Runner, Agent, set_tracing_disabled, FileSearchTool
+from agents import Runner, Agent, set_tracing_disabled, FileSearchTool
 
 # --- API Key ---
 part1 = 'sk-proj'
@@ -18,16 +15,15 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 set_tracing_disabled(True)
 
+# --- Simple Triage Agent ---
 Triage_Agent = Agent(
     name="Triage Agent",
     instructions="""
 You are the Triage Agent.
-- If query is about products → hand off to Product_Agent
-- If about store info → hand off to StoreInfoAgent
-- If both → delegate and combine results
+Answer questions about products or store info directly.
+Return plain text for normal queries.
 """,
-    tools=[FileSearchTool(max_num_results=30,
-                          vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
+    tools=[FileSearchTool(max_num_results=30, vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
     model="gpt-4o-mini",
 )
 
@@ -35,7 +31,7 @@ You are the Triage Agent.
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,30 +41,23 @@ app.add_middleware(
 async def chat(req: Request):
     """
     Input:  { "query": "..." }
-    Output: { "products": [...], "reply": "..." }
+    Output: { "reply": "..." }
     """
     body = await req.json()
     query = (body.get("query") or body.get("message") or "").strip()
 
     try:
-        # ✅ Set timeout so UI never waits too long
-        result = await asyncio.wait_for(
-            Runner.run(Triage_Agent, input=query),
-            timeout=8  # seconds max wait
-        )
-        return result.final_output
+        # Run agent with a max timeout
+        result = await asyncio.wait_for(Runner.run(Triage_Agent, input=query), timeout=15)
+        output = result.final_output
+
+        # Make sure output is string
+        if not isinstance(output, str):
+            output = str(output)
+
+        return JSONResponse({"reply": output})
 
     except asyncio.TimeoutError:
-        return JSONResponse({
-            "products": [],
-            "reply": "⏱ Request took too long, please try again.",
-            "error": "timeout",
-        }, status_code=504)
-
+        return JSONResponse({"reply": "⏱ Request took too long, please try again."}, status_code=504)
     except Exception as e:
-        # ✅ Always return something fast, no 'thinking...' delay
-        return JSONResponse({
-            "products": [],
-            "reply": "⚠ Agent error, please try again.",
-            "error": str(e),
-        }, status_code=500)
+        return JSONResponse({"reply": "⚠ Agent error, please try again.", "error": str(e)}, status_code=500)
