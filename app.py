@@ -98,6 +98,39 @@ def parse_price(s: Any) -> float | int:
         return 0
     val = m.group(1).replace(",", ".")
     return float(val) if "." in val else int(val)
+def parse_markdown_products(text: str):
+    """
+    Extract products from markdown-like output.
+    Example:
+    1. **Title** - **Price**: $9.99 - **Description**: ... - **Link**: [View Product](URL) ![Image](URL)
+    """
+    products = []
+    if not text:
+        return products
+
+    # Split by numbered list items (1., 2., etc.)
+    parts = re.split(r"\n?\s*\d+\.\s*", text)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        title = re.search(r"\*\*(.*?)\*\*", part)
+        price = re.search(r"\*\*Price\*\*[:\s-]*\$?([\d\.,]+)", part) or re.search(r"Price[:\s-]*\$?([\d\.,]+)", part)
+        desc = re.search(r"\*\*Description\*\*[:\s-]*(.*?)(?: - \*\*| - \[|$)", part)
+        link = re.search(r"\[View Product\]\((https?:\/\/[^\)\s]+)\)", part)
+        image = re.search(r"!\[.*?\]\((https?:\/\/[^\)\s]+)\)", part)
+
+        products.append({
+            "title": title.group(1) if title else "",
+            "price": float(price.group(1).replace(",", "")) if price else 0,
+            "description": desc.group(1).strip() if desc else "",
+            "link": link.group(1) if link else "",
+            "image": image.group(1) if image else "",
+            "qty": ""
+        })
+    return products
+
 
 def normalize_item(item: Any) -> dict | None:
     """Map raw agent product output → frontend schema"""
@@ -119,20 +152,31 @@ def normalize_item(item: Any) -> dict | None:
 async def chat(req: Request):
     """
     Input:  { "query": "..." }
-    Output: { "products": [...], "reply": "..." }
+    Output: {
+        "products": [
+            {
+                "title": str,
+                "price": str,
+                "description": str,
+                "image": str,
+                "link": str
+            }
+        ],
+        "reply": str
+    }
     """
     body = await req.json()
     query = body.get("query") or body.get("message") or ""
 
     try:
-        # Run Triage Agent
+        # Run your triage/product agent
         result = await Runner.run(Triage_Agent, input=query)
         final_output = result.final_output
 
         products: List[dict] = []
         reply_text = ""
 
-        # Case: structured list
+        # Case: list of structured items
         if isinstance(final_output, list):
             for it in final_output:
                 n = normalize_item(it)
@@ -145,9 +189,25 @@ async def chat(req: Request):
             if n:
                 products.append(n)
 
-        # Case: plain text
+        # Case: plain text (try to extract inline product-like info)
         elif isinstance(final_output, str):
             reply_text = final_output
+
+            # OPTIONAL: try to auto-detect product blocks inside the text
+            # (very simple regex/heuristic to extract structured cards)
+            import re
+            pattern = r"\*\*(.*?)\*\*.*?- \*\*Price\*\*: \$(.*?) - \*\*Description\*\*: (.*?) - \*\*Link\*\*: \[.*?\]\((.*?)\).*?!\[Image\]\((.*?)\)"
+            matches = re.findall(pattern, final_output, re.DOTALL)
+
+            for m in matches:
+                title, price, desc, link, img = m
+                products.append({
+                    "title": title.strip(),
+                    "price": price.strip(),
+                    "description": desc.strip(),
+                    "link": link.strip(),
+                    "image": img.strip(),
+                })
 
         return JSONResponse({
             "products": products,
@@ -160,3 +220,4 @@ async def chat(req: Request):
             "reply": "⚠️ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
+
