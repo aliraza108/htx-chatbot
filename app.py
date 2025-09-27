@@ -51,7 +51,7 @@ async def chat(req: Request):
     body = await req.json()
     query = (body.get("query") or body.get("message") or "").strip()
     try:
-        result = await Runner.run(Triage_Agent, input=query)
+        result = Runner.run_sync(Triage_Agent, input=query)
         return result.final_output
     except Exception as e:
         print("Agent error:", e)   # ✅ shows in Vercel logs
