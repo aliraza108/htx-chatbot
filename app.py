@@ -146,68 +146,45 @@ def normalize_item(item: Any) -> dict | None:
         "description": item.get("Product_description") or item.get("description") or "",
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
-
 # --- Chat Endpoint ---
 @app.post("/chat")
 async def chat(req: Request):
     """
     Input:  { "query": "..." }
-    Output: {
-        "products": [
-            {
-                "title": str,
-                "price": str,
-                "description": str,
-                "image": str,
-                "link": str
-            }
-        ],
-        "reply": str
-    }
+    Output: { "products": [...], "reply": "..." }
     """
     body = await req.json()
     query = body.get("query") or body.get("message") or ""
 
     try:
-        # Run your triage/product agent
+        # Run agent
         result = await Runner.run(Triage_Agent, input=query)
         final_output = result.final_output
 
         products: List[dict] = []
         reply_text = ""
 
-        # Case: list of structured items
-        if isinstance(final_output, list):
+        # --- Case 1: Agent already returned structured JSON ---
+        if isinstance(final_output, dict) and "products" in final_output:
+            products = final_output.get("products", [])
+            reply_text = final_output.get("reply", "")
+
+        # --- Case 2: List of products ---
+        elif isinstance(final_output, list):
             for it in final_output:
                 n = normalize_item(it)
                 if n:
                     products.append(n)
 
-        # Case: dict / dataclass
+        # --- Case 3: Single dict product ---
         elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
             n = normalize_item(final_output)
             if n:
                 products.append(n)
 
-        # Case: plain text (try to extract inline product-like info)
+        # --- Case 4: Plain text response ---
         elif isinstance(final_output, str):
             reply_text = final_output
-
-            # OPTIONAL: try to auto-detect product blocks inside the text
-            # (very simple regex/heuristic to extract structured cards)
-            import re
-            pattern = r"\*\*(.*?)\*\*.*?- \*\*Price\*\*: \$(.*?) - \*\*Description\*\*: (.*?) - \*\*Link\*\*: \[.*?\]\((.*?)\).*?!\[Image\]\((.*?)\)"
-            matches = re.findall(pattern, final_output, re.DOTALL)
-
-            for m in matches:
-                title, price, desc, link, img = m
-                products.append({
-                    "title": title.strip(),
-                    "price": price.strip(),
-                    "description": desc.strip(),
-                    "link": link.strip(),
-                    "image": img.strip(),
-                })
 
         return JSONResponse({
             "products": products,
@@ -220,4 +197,5 @@ async def chat(req: Request):
             "reply": "⚠️ Agent error, please try again.",
             "error": str(e),
         }, status_code=500)
+
 
