@@ -102,7 +102,7 @@ def parse_markdown_products(text: str):
     """
     Extract products from markdown-like output.
     Example:
-    1. **Title** - **Price**: $9.99 - **Description**: ... - **Link**: [View Product](URL) ![Image](URL)
+    1. *Title* - *Price: $9.99 - **Description: ... - **Link*: [View Product](URL) ![Image](URL)
     """
     products = []
     if not text:
@@ -115,9 +115,9 @@ def parse_markdown_products(text: str):
         if not part:
             continue
 
-        title = re.search(r"\*\*(.*?)\*\*", part)
-        price = re.search(r"\*\*Price\*\*[:\s-]*\$?([\d\.,]+)", part) or re.search(r"Price[:\s-]*\$?([\d\.,]+)", part)
-        desc = re.search(r"\*\*Description\*\*[:\s-]*(.*?)(?: - \*\*| - \[|$)", part)
+        title = re.search(r"\\(.?)\\*", part)
+        price = re.search(r"\\*Price\\[:\s-]\$?([\d\.,]+)", part) or re.search(r"Price[:\s-]*\$?([\d\.,]+)", part)
+        desc = re.search(r"\\*Description\\[:\s-](.?)(?: - \\*| - \[|$)", part)
         link = re.search(r"\[View Product\]\((https?:\/\/[^\)\s]+)\)", part)
         image = re.search(r"!\[.*?\]\((https?:\/\/[^\)\s]+)\)", part)
 
@@ -134,8 +134,8 @@ def parse_markdown_products(text: str):
 
 def normalize_item(item: Any) -> dict | None:
     """Map raw agent product output → frontend schema"""
-    if hasattr(item, "__dict__"):
-        item = item.__dict__
+    if hasattr(item, "_dict_"):
+        item = item._dict_
     if not isinstance(item, dict):
         return None
     return {
@@ -157,8 +157,8 @@ from typing import List, Any
 
 def normalize_item(item: Any) -> dict | None:
     """Normalize agent product output → dict"""
-    if hasattr(item, "__dict__"):
-        item = item.__dict__
+    if hasattr(item, "_dict_"):
+        item = item._dict_
     if not isinstance(item, dict):
         return None
     return {
@@ -178,7 +178,53 @@ async def chat(req: Request):
     body = await req.json()
     query = (body.get("query") or body.get("message") or "").strip()
 
+    try:
         # --- Always run triage (no timeout) ---
-    result = await Runner.run(Triage_Agent, input=query)
-    final_output = result.final_output
-    return final_output
+        result = await Runner.run(Triage_Agent, input=query)
+        final_output = result.final_output
+
+        products: List[dict] = []
+        reply_text = ""
+
+        # --- Case 1: already structured list of products ---
+        if isinstance(final_output, list):
+            for it in final_output:
+                n = normalize_item(it)
+                if n:
+                    products.append(n)
+
+        # --- Case 2: single dict product ---
+        elif isinstance(final_output, dict) or hasattr(final_output, "_dict_"):
+            n = normalize_item(final_output)
+            if n:
+                products.append(n)
+
+        # --- Case 3: plain text ---
+        elif isinstance(final_output, str):
+            reply_text = final_output
+
+            # If looks like markdown products, force Product_Agent
+            if "http" in reply_text or "Price" in reply_text:
+                try:
+                    result2 = await Runner.run(Product_Agent, input=query)
+                    final_output2 = result2.final_output
+                    if isinstance(final_output2, list):
+                        for it in final_output2:
+                            n = normalize_item(it)
+                            if n:
+                                products.append(n)
+                        reply_text = ""  # clear markdown junk
+                except Exception:
+                    pass
+
+        return JSONResponse({
+            "products": products,
+            "reply": reply_text,
+        })
+
+    except Exception as e:
+        return JSONResponse({
+            "products": [],
+            "reply": "⚠ Agent error, please try again.",
+            "error": str(e),
+        }, status_code=500)
