@@ -146,6 +146,8 @@ def normalize_item(item: Any) -> dict | None:
         "description": item.get("Product_description") or item.get("description") or "",
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
+
+
 # --- Chat Endpoint ---
 @app.post("/chat")
 async def chat(req: Request):
@@ -164,7 +166,7 @@ async def chat(req: Request):
         products: List[dict] = []
         reply_text = ""
 
-        # --- Case 1: Agent already returned structured JSON ---
+        # --- Case 1: Structured dict with products ---
         if isinstance(final_output, dict) and "products" in final_output:
             products = final_output.get("products", [])
             reply_text = final_output.get("reply", "")
@@ -182,9 +184,14 @@ async def chat(req: Request):
             if n:
                 products.append(n)
 
-        # --- Case 4: Plain text response ---
+        # --- Case 4: Plain text ---
         elif isinstance(final_output, str):
-            reply_text = final_output
+            # Try to parse markdown into products
+            parsed = parse_markdown_products(final_output)
+            if parsed and len(parsed) > 0:
+                products.extend(parsed)
+            else:
+                reply_text = final_output
 
         return JSONResponse({
             "products": products,
