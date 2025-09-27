@@ -1,6 +1,5 @@
 # chat_api.py
 import re
-import json
 import os
 from dataclasses import dataclass, asdict
 from typing import Any, List
@@ -19,52 +18,6 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 set_tracing_disabled(True)
 
-# --- Dataclass Schema ---
-@dataclass
-class Product_output:
-    Product_Title: str
-    Product_Price: int
-    Product_Link: str
-    Product_Image: str
-    Product_description: str
-    Product_qty: str
-
-# --- Agents ---
-Product_Agent = Agent(
-    name="Product Agent",
-    instructions="""
-You are the Product Agent.
-Return ONLY a JSON array of product objects, each matching this schema:
-[
-  {
-    "Product_Title": "string",
-    "Product_Price": 0,
-    "Product_Link": "string",
-    "Product_Image": "string",
-    "Product_description": "string",
-    "Product_qty": "string"
-  }
-]
-If no product found, return [].
-""",
-    tools=[FileSearchTool(max_num_results=30,
-                          vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
-    model="gpt-4o-mini",
-    output_type=list[Product_output],
-)
-
-StoreInfoAgent = Agent(
-    name="Store Info Agent",
-    instructions="""
-You are the Store Info Agent.
-Answer ONLY using store data (policies, contact, shipping, etc.).
-If info missing, say it is unavailable.
-""",
-    tools=[FileSearchTool(max_num_results=30,
-                          vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
-    model="gpt-4o-mini",
-)
-
 Triage_Agent = Agent(
     name="Triage Agent",
     instructions="""
@@ -75,7 +28,7 @@ You are the Triage Agent.
 """,
     tools=[FileSearchTool(max_num_results=30,
                           vector_store_ids=["vs_68d4ea25a3d08191babc7ee15c21a6cb"])],
-    handoffs=[Product_Agent, StoreInfoAgent],
+    
     model="gpt-4o-mini",
 )
 
@@ -89,86 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Helpers ---
-def parse_price(s: Any) -> float | int:
-    if not s:
-        return 0
-    m = re.search(r"(\d+(?:[\.,]\d+)?)", str(s))
-    if not m:
-        return 0
-    val = m.group(1).replace(",", ".")
-    return float(val) if "." in val else int(val)
-def parse_markdown_products(text: str):
-    """
-    Extract products from markdown-like output.
-    Example:
-    1. *Title* - *Price: $9.99 - **Description: ... - **Link*: [View Product](URL) ![Image](URL)
-    """
-    products = []
-    if not text:
-        return products
-
-    # Split by numbered list items (1., 2., etc.)
-    parts = re.split(r"\n?\s*\d+\.\s*", text)
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-
-        title = re.search(r"\\(.?)\\*", part)
-        price = re.search(r"\\*Price\\[:\s-]\$?([\d\.,]+)", part) or re.search(r"Price[:\s-]*\$?([\d\.,]+)", part)
-        desc = re.search(r"\\*Description\\[:\s-](.?)(?: - \\*| - \[|$)", part)
-        link = re.search(r"\[View Product\]\((https?:\/\/[^\)\s]+)\)", part)
-        image = re.search(r"!\[.*?\]\((https?:\/\/[^\)\s]+)\)", part)
-
-        products.append({
-            "title": title.group(1) if title else "",
-            "price": float(price.group(1).replace(",", "")) if price else 0,
-            "description": desc.group(1).strip() if desc else "",
-            "link": link.group(1) if link else "",
-            "image": image.group(1) if image else "",
-            "qty": ""
-        })
-    return products
-
-
-def normalize_item(item: Any) -> dict | None:
-    """Map raw agent product output → frontend schema"""
-    if hasattr(item, "_dict_"):
-        item = item._dict_
-    if not isinstance(item, dict):
-        return None
-    return {
-        "title": item.get("Product_Title") or item.get("title") or "",
-        "price": parse_price(item.get("Product_Price") or item.get("price") or 0),
-        "link": item.get("Product_Link") or item.get("link") or "",
-        "image": item.get("Product_Image") or item.get("image") or "",
-        "description": item.get("Product_description") or item.get("description") or "",
-        "qty": item.get("Product_qty") or item.get("qty") or "",
-    }
-
-
-
-# --- Chat Endpoint ---
-from fastapi import Request
-from fastapi.responses import JSONResponse
-import asyncio
-from typing import List, Any
-
-def normalize_item(item: Any) -> dict | None:
-    """Normalize agent product output → dict"""
-    if hasattr(item, "_dict_"):
-        item = item._dict_
-    if not isinstance(item, dict):
-        return None
-    return {
-        "title": item.get("Product_Title") or item.get("title") or "",
-        "price": item.get("Product_Price") or item.get("price") or 0,
-        "link": item.get("Product_Link") or item.get("link") or "",
-        "image": item.get("Product_Image") or item.get("image") or "",
-        "description": item.get("Product_description") or item.get("description") or "",
-        "qty": item.get("Product_qty") or item.get("qty") or "",
-    }
 @app.post("/chat")
 async def chat(req: Request):
     """
@@ -181,46 +54,7 @@ async def chat(req: Request):
     try:
         # --- Always run triage (no timeout) ---
         result = await Runner.run(Triage_Agent, input=query)
-        final_output = result.final_output
-
-        products: List[dict] = []
-        reply_text = ""
-
-        # --- Case 1: already structured list of products ---
-        if isinstance(final_output, list):
-            for it in final_output:
-                n = normalize_item(it)
-                if n:
-                    products.append(n)
-
-        # --- Case 2: single dict product ---
-        elif isinstance(final_output, dict) or hasattr(final_output, "_dict_"):
-            n = normalize_item(final_output)
-            if n:
-                products.append(n)
-
-        # --- Case 3: plain text ---
-        elif isinstance(final_output, str):
-            reply_text = final_output
-
-            # If looks like markdown products, force Product_Agent
-            if "http" in reply_text or "Price" in reply_text:
-                try:
-                    result2 = await Runner.run(Product_Agent, input=query)
-                    final_output2 = result2.final_output
-                    if isinstance(final_output2, list):
-                        for it in final_output2:
-                            n = normalize_item(it)
-                            if n:
-                                products.append(n)
-                        reply_text = ""  # clear markdown junk
-                except Exception:
-                    pass
-
-        return JSONResponse({
-            "products": products,
-            "reply": reply_text,
-        })
+        return result.final_output
 
     except Exception as e:
         return JSONResponse({
