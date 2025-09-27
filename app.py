@@ -147,33 +147,28 @@ def normalize_item(item: Any) -> dict | None:
         "qty": item.get("Product_qty") or item.get("qty") or "",
     }
 
+
+
 # --- Chat Endpoint ---
 from fastapi import Request
 from fastapi.responses import JSONResponse
 import asyncio
-from typing import List
+from typing import List, Any
 
-# Example simple FAQ shortcuts
-FAQS = {
-    "hi": "👋 Hi there! How can I help you today?",
-    "hello": "👋 Hello! Ask me about hemp products, pricing, or delivery.",
-    "what is your name": "🤖 I'm HTX Chatbot, your product assistant.",
-    "delivery charges": "🚚 Delivery is FREE for orders over $50. Otherwise $4.99."
-}
-
-def normalize_item(item):
-    """Normalize product object into dict for cards"""
-    try:
-        return {
-            "title": getattr(item, "Product_Title", None) or item.get("Product_Title"),
-            "price": getattr(item, "Product_Price", None) or item.get("Product_Price"),
-            "description": getattr(item, "Product_description", None) or item.get("Product_description"),
-            "image": getattr(item, "Product_Image", None) or item.get("Product_Image"),
-            "link": getattr(item, "Product_Link", None) or item.get("Product_Link"),
-            "qty": getattr(item, "Product_qty", None) or item.get("Product_qty"),
-        }
-    except Exception:
+def normalize_item(item: Any) -> dict | None:
+    """Normalize agent product output → dict"""
+    if hasattr(item, "__dict__"):
+        item = item.__dict__
+    if not isinstance(item, dict):
         return None
+    return {
+        "title": item.get("Product_Title") or item.get("title") or "",
+        "price": item.get("Product_Price") or item.get("price") or 0,
+        "link": item.get("Product_Link") or item.get("link") or "",
+        "image": item.get("Product_Image") or item.get("image") or "",
+        "description": item.get("Product_description") or item.get("description") or "",
+        "qty": item.get("Product_qty") or item.get("qty") or "",
+    }
 
 
 @app.post("/chat")
@@ -183,59 +178,45 @@ async def chat(req: Request):
     Output: { "products": [...], "reply": "..." }
     """
     body = await req.json()
-    query = (body.get("query") or body.get("message") or "").strip().lower()
+    query = (body.get("query") or body.get("message") or "").strip()
 
     try:
-        # --- Quick FAQ handling (no LLM) ---
-        if query in FAQS:
+        # --- Run Triage Agent with strict timeout (fast) ---
+        try:
+            result = await asyncio.wait_for(
+                Runner.run(Triage_Agent, input=query),
+                timeout=5   # keep very short
+            )
+            final_output = result.final_output
+        except asyncio.TimeoutError:
             return JSONResponse({
                 "products": [],
-                "reply": FAQS[query]
+                "reply": "⚡ Request took too long. Please try again."
             })
 
-        # --- If asking for products ---
-        if "product" in query or "hemp" in query:
-            try:
-                result = await asyncio.wait_for(
-                    Runner.run(Triage_Agent, input=query),
-                    timeout=4  # max 4s wait
-                )
-                final_output = result.final_output
-            except asyncio.TimeoutError:
-                return JSONResponse({
-                    "products": [],
-                    "reply": "⚡ Sorry, request took too long. Please try again."
-                })
+        products: List[dict] = []
+        reply_text = ""
 
-            products: List[dict] = []
-            reply_text = ""
-
-            # Case: structured list
-            if isinstance(final_output, list):
-                for it in final_output:
-                    n = normalize_item(it)
-                    if n:
-                        products.append(n)
-
-            # Case: dict / dataclass
-            elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
-                n = normalize_item(final_output)
+        # Case: list of structured products
+        if isinstance(final_output, list):
+            for it in final_output:
+                n = normalize_item(it)
                 if n:
                     products.append(n)
 
-            # Case: plain text
-            elif isinstance(final_output, str):
-                reply_text = final_output
+        # Case: single product dict
+        elif isinstance(final_output, dict) or hasattr(final_output, "__dict__"):
+            n = normalize_item(final_output)
+            if n:
+                products.append(n)
 
-            return JSONResponse({
-                "products": products,
-                "reply": reply_text
-            })
+        # Case: plain text reply
+        elif isinstance(final_output, str):
+            reply_text = final_output
 
-        # --- Default fallback (fast text only) ---
         return JSONResponse({
-            "products": [],
-            "reply": "🤔 I didn’t understand that. Try asking about hemp products or delivery."
+            "products": products,
+            "reply": reply_text,
         })
 
     except Exception as e:
