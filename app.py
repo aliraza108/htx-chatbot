@@ -146,7 +146,7 @@ async def chat(request: Request):
 
     try:
         result = await Runner.run(Triage_Agent, input=query)
-        return {"reply": str(result)}
+        return {"reply": str(result.final_output)}
     except Exception as e:
         print("Runner error:", e)
         return {"error": "Agent failed", "details": str(e)}
